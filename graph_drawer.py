@@ -8,6 +8,7 @@ from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
 from graph_export import MatrixBuilder, TikzExporter
 from graph_symbolic import (
     DeletionContractionCalculator,
+    SYMBOLIC_CONFIGS,
     SymbolicComputationLimit,
     SymbolicEdge,
     SymbolicGraph,
@@ -157,6 +158,9 @@ class GraphDrawer:
         self.show_edge_labels = tk.BooleanVar(value=False)
         self.matrix_show_labels = tk.BooleanVar(value=True)
         self.status_text = tk.StringVar(value="")
+        self.symbolic_config_keys = tuple(sorted(SYMBOLIC_CONFIGS))
+        default_symbolic_config = "default" if "default" in self.symbolic_config_keys else self.symbolic_config_keys[0]
+        self.symbolic_config = tk.StringVar(value=default_symbolic_config)
         self.symbolic_result = None
         self.symbolic_step_by_id = {}
         self.symbolic_selected_step = None
@@ -471,26 +475,40 @@ class GraphDrawer:
 
         ttk.Label(
             tab,
-            text="对当前图 G 执行删除-收缩递归，计算 f(G)。",
+            text="按所选配置组对当前图 G 执行符号递归，计算 f(G)。",
             wraplength=250,
             justify=tk.LEFT,
         ).grid(row=0, column=0, sticky=tk.EW, pady=(0, 10))
-        ttk.Button(tab, text="计算 f(G)", command=self.open_symbolic_calculator).grid(row=1, column=0, sticky=tk.EW, pady=4)
-        ttk.Button(tab, text="重新计算并打开步骤窗口", command=self.open_symbolic_calculator).grid(row=2, column=0, sticky=tk.EW, pady=4)
+        ttk.Label(tab, text="配置组").grid(row=1, column=0, sticky=tk.W)
+        ttk.Combobox(
+            tab,
+            textvariable=self.symbolic_config,
+            values=self.symbolic_config_keys,
+            state="readonly",
+        ).grid(row=2, column=0, sticky=tk.EW, pady=(2, 8))
+        ttk.Button(tab, text="计算 f(G)", command=self.open_symbolic_calculator).grid(row=3, column=0, sticky=tk.EW, pady=4)
+        ttk.Button(tab, text="重新计算并打开步骤窗口", command=self.open_symbolic_calculator).grid(row=4, column=0, sticky=tk.EW, pady=4)
 
         hint = (
-            "规则：无边且有 n 个点时 f(G)=h^n；否则选择一条边 e，"
-            "f(G)=a f(G-e)+b f(G/e)。"
+            "配置组来自 graph_symbolic_config.py；步骤窗口会按当前配置中的操作项显示子图。"
         )
-        ttk.Label(tab, text=hint, wraplength=250, justify=tk.LEFT, foreground="#6b7280").grid(row=3, column=0, sticky=tk.EW, pady=(12, 0))
+        ttk.Label(tab, text=hint, wraplength=250, justify=tk.LEFT, foreground="#6b7280").grid(row=5, column=0, sticky=tk.EW, pady=(12, 0))
 
     def open_symbolic_calculator(self):
         graph = self._symbolic_graph_from_current()
-        calculator = DeletionContractionCalculator(max_steps=12000, use_memo=False)
+        config_key = self.symbolic_config.get()
         try:
+            calculator = DeletionContractionCalculator(
+                max_steps=120000,
+                use_memo=False,
+                config_key=config_key,
+            )
             result = calculator.calculate(graph)
         except SymbolicComputationLimit as exc:
             messagebox.showwarning("符号计算过大", str(exc), parent=self.root)
+            return
+        except ValueError as exc:
+            messagebox.showwarning("符号计算配置错误", str(exc), parent=self.root)
             return
 
         self.symbolic_result = result
@@ -577,28 +595,32 @@ class GraphDrawer:
 
         visual_frame = ttk.Frame(right)
         visual_frame.grid(row=1, column=0, sticky=tk.NSEW)
-        visual_frame.columnconfigure(0, weight=1)
-        visual_frame.columnconfigure(1, weight=1)
-        visual_frame.columnconfigure(2, weight=1)
+        max_branch_count = max((len(step.branches) for step in result.steps), default=0)
+        panel_count = max(1, 1 + max_branch_count)
+        for column in range(panel_count):
+            visual_frame.columnconfigure(column, weight=1)
         visual_frame.rowconfigure(1, weight=1)
 
-        titles = ("当前 G", "删除 G-e", "收缩 G/e")
+        panel_width = 250 if panel_count <= 3 else 190
         canvases = []
-        for column, title in enumerate(titles):
-            ttk.Label(visual_frame, text=title, font=("Segoe UI", 9, "bold")).grid(row=0, column=column, sticky=tk.W)
+        canvas_labels = []
+        for column in range(panel_count):
+            label = ttk.Label(visual_frame, text="", font=("Segoe UI", 9, "bold"))
+            label.grid(row=0, column=column, sticky=tk.W)
             canvas = tk.Canvas(
                 visual_frame,
-                width=250,
+                width=panel_width,
                 height=220,
                 bg="#ffffff",
                 highlightthickness=1,
                 highlightbackground="#d9e0ea",
             )
             canvas.grid(row=1, column=column, sticky=tk.NSEW, padx=(0 if column == 0 else 8, 0), pady=(4, 8))
+            canvas_labels.append(label)
             canvases.append(canvas)
 
         poly_text = tk.Text(visual_frame, height=9, wrap=tk.WORD, relief=tk.FLAT, bg="#ffffff")
-        poly_text.grid(row=2, column=0, columnspan=3, sticky=tk.EW)
+        poly_text.grid(row=2, column=0, columnspan=panel_count, sticky=tk.EW)
 
         substitution = ttk.Labelframe(right, text="代入计算", padding=8)
         substitution.grid(row=2, column=0, sticky=tk.EW, pady=(8, 0))
@@ -628,7 +650,9 @@ class GraphDrawer:
             "window": dialog,
             "tree": tree,
             "final_text": final_text,
+            "canvas_labels": canvas_labels,
             "canvases": canvases,
+            "panel_count": panel_count,
             "poly_text": poly_text,
             "visual_frame": visual_frame,
             "export_widget": right,
@@ -644,7 +668,7 @@ class GraphDrawer:
         tree.focus(str(result.root.id))
         self._render_symbolic_step(result.root)
 
-    def _populate_symbolic_tree(self, tree, step, parent=""):
+    def _populate_symbolic_tree(self, tree, step, parent="", incoming_branch=None):
         if step.base_case:
             text = f"步骤 {step.id}: 基础"
             edge_text = "-"
@@ -654,15 +678,15 @@ class GraphDrawer:
         else:
             text = f"步骤 {step.id}: 展开"
             edge_text = step.edge.label
+        if incoming_branch is not None:
+            text = f"{self._symbolic_operation_title(incoming_branch.operation)} -> {text}"
 
         iid = str(step.id)
         tree.insert(parent, tk.END, iid=iid, text=text, values=(edge_text, step.polynomial.short_string()))
         if step.depth < 2:
             tree.item(iid, open=True)
-        if step.delete_child is not None:
-            self._populate_symbolic_tree(tree, step.delete_child, iid)
-        if step.contract_child is not None:
-            self._populate_symbolic_tree(tree, step.contract_child, iid)
+        for branch in step.branches:
+            self._populate_symbolic_tree(tree, branch.child, iid, incoming_branch=branch)
 
     def _on_symbolic_tree_select(self, event=None):
         tree = self.symbolic_ui.get("tree")
@@ -689,21 +713,43 @@ class GraphDrawer:
         )
         self._set_text_widget(self.symbolic_ui["final_text"], final_text)
 
+        canvas_labels = self.symbolic_ui["canvas_labels"]
         canvases = self.symbolic_ui["canvases"]
         highlight_id = step.edge.id if step.edge is not None else None
-        self._draw_symbolic_graph_canvas(canvases[0], step.graph, highlight_edge_id=highlight_id)
-        self._draw_symbolic_graph_canvas(canvases[1], step.deleted_graph)
-        self._draw_symbolic_graph_canvas(canvases[2], step.contracted_graph)
+        panels = [("当前 G", step.graph, highlight_id)]
+        panels.extend(
+            (
+                self._symbolic_branch_panel_title(branch),
+                branch.graph,
+                None,
+            )
+            for branch in step.branches
+        )
+        for index, (label, canvas) in enumerate(zip(canvas_labels, canvases)):
+            if index < len(panels):
+                title, graph, panel_highlight_id = panels[index]
+                label.configure(text=title)
+                label.grid()
+                canvas.grid()
+                self._draw_symbolic_graph_canvas(
+                    canvas,
+                    graph,
+                    highlight_edge_id=panel_highlight_id,
+                )
+            else:
+                label.grid_remove()
+                canvas.grid_remove()
 
         self._set_text_widget(self.symbolic_ui["poly_text"], self._symbolic_step_text(step))
         self._evaluate_symbolic_substitution()
 
     def _symbolic_step_text(self, step):
         if step.base_case:
-            n = len(step.graph.vertices)
+            rule = step.initial_rule
+            rule_title = rule.title if rule is not None else "基础规则"
             return (
-                f"基础情形：当前图没有边，点数 n={n}。\n"
-                f"f(G) = h^{n} = {step.polynomial}\n"
+                f"基础情形：命中 {rule_title}。\n"
+                f"f(G) = {step.polynomial}\n"
                 f"SymPy：{step.polynomial.sympy_string()}"
             )
         if step.memo_hit:
@@ -712,16 +758,49 @@ class GraphDrawer:
                 f"f(G) = {step.polynomial}\n"
                 f"SymPy：{step.polynomial.sympy_string()}"
             )
-        return (
+        lines = [
             f"选择边 e = {step.edge.label}，连接 {self._symbolic_vertex_label(step.graph, step.edge.source)} "
-            f"与 {self._symbolic_vertex_label(step.graph, step.edge.target)}。\n"
-            f"删除：f(G-e) = {step.deleted_polynomial}\n"
-            f"删除 SymPy：{step.deleted_polynomial.sympy_string()}\n"
-            f"收缩：f(G/e) = {step.contracted_polynomial}\n"
-            f"收缩 SymPy：{step.contracted_polynomial.sympy_string()}\n"
-            f"因此：f(G) = a({step.deleted_polynomial}) + b({step.contracted_polynomial}) = {step.polynomial}\n"
-            f"因此 SymPy：{step.polynomial.sympy_string()}"
+            f"与 {self._symbolic_vertex_label(step.graph, step.edge.target)}。"
+        ]
+        if step.flow is not None:
+            lines.append(f"命中流程：{step.flow.title} ({step.flow.key})")
+        for branch in step.branches:
+            operation_title = self._symbolic_operation_title(branch.operation)
+            contribution = branch.weighted_polynomial
+            lines.extend(
+                [
+                    "",
+                    f"{operation_title}：子图 f = {branch.polynomial}",
+                    f"{operation_title} 系数：{branch.coefficient}",
+                    f"{operation_title} 贡献：{contribution}",
+                    f"{operation_title} SymPy：{branch.polynomial.sympy_string()}",
+                ]
+            )
+        formula = self._symbolic_step_formula_text(step)
+        lines.extend(
+            [
+                "",
+                f"因此：f(G) = {formula} = {step.polynomial}",
+                f"因此 SymPy：{step.polynomial.sympy_string()}",
+            ]
         )
+        return "\n".join(lines)
+
+    def _symbolic_operation_title(self, operation):
+        title = getattr(operation, "title", "") or getattr(operation, "key", "")
+        return title or "操作"
+
+    def _symbolic_branch_panel_title(self, branch):
+        operation_title = self._symbolic_operation_title(branch.operation)
+        return f"{operation_title}: {branch.coefficient}·f"
+
+    def _symbolic_branch_formula_text(self, branch):
+        return branch.operation.formula_text(str(branch.polynomial), branch.coefficient)
+
+    def _symbolic_step_formula_text(self, step):
+        if not step.branches:
+            return str(step.polynomial)
+        return " + ".join(self._symbolic_branch_formula_text(branch) for branch in step.branches)
 
     def _symbolic_vertex_label(self, graph, vertex_id):
         try:
@@ -743,10 +822,12 @@ class GraphDrawer:
             f"最终结果代入：{final_value}",
             f"当前步骤 f(G) 代入：{step.polynomial.substitute(substitutions)}",
         ]
-        if step.deleted_polynomial is not None:
-            lines.append(f"当前步骤 f(G-e) 代入：{step.deleted_polynomial.substitute(substitutions)}")
-        if step.contracted_polynomial is not None:
-            lines.append(f"当前步骤 f(G/e) 代入：{step.contracted_polynomial.substitute(substitutions)}")
+        for branch in step.branches:
+            operation_title = self._symbolic_operation_title(branch.operation)
+            child_value = branch.polynomial.substitute(substitutions)
+            contribution_value = branch.weighted_polynomial.substitute(substitutions)
+            lines.append(f"{operation_title} 子图代入：{child_value}")
+            lines.append(f"{operation_title} 贡献代入：{contribution_value}")
         text = "\n".join(lines)
         self._set_text_widget(self.symbolic_ui["substitution_text"], text)
 
@@ -797,8 +878,22 @@ class GraphDrawer:
         x0, y0 = source
         x1, y1 = target
         if edge.source == edge.target:
-            canvas.create_oval(x0 + 5, y0 - 35, x0 + 42, y0 + 2, outline=color, width=line_width)
-            canvas.create_text(x0 + 43, y0 - 29, text=edge.label, fill=color, font=("Cambria", 9, "italic"))
+            grow = group_index * 12
+            canvas.create_oval(
+                x0 + 5 + grow,
+                y0 - 35 - grow,
+                x0 + 42 + grow,
+                y0 + 2 + grow,
+                outline=color,
+                width=line_width,
+            )
+            canvas.create_text(
+                x0 + 43 + grow,
+                y0 - 29 - grow,
+                text=edge.label,
+                fill=color,
+                font=("Cambria", 9, "italic"),
+            )
             return
 
         dx = x1 - x0
@@ -806,7 +901,7 @@ class GraphDrawer:
         distance = math.hypot(dx, dy) or 1
         nx = -dy / distance
         ny = dx / distance
-        offset = (group_index - (group_count - 1) / 2) * 18
+        offset = self._parallel_edge_offset(group_index, group_count, 22)
         if abs(offset) > 0.01:
             mx = (x0 + x1) / 2 + nx * offset
             my = (y0 + y1) / 2 + ny * offset
@@ -907,7 +1002,7 @@ class GraphDrawer:
 
     def _symbolic_step_tikz(self, step):
         lines = [
-            "% Symbolic deletion-contraction step generated by Graph Drawer",
+            "% Symbolic operation step generated by Graph Drawer",
             "\\begin{tikzpicture}[x=1cm, y=1cm]",
             (
                 "\\node[anchor=west, font=\\small\\bfseries] at (0,0.45) "
@@ -920,9 +1015,16 @@ class GraphDrawer:
         ]
         panels = [
             ("Current $G$", step.graph, step.edge.id if step.edge else None, step.polynomial),
-            ("Delete $G-e$", step.deleted_graph, None, step.deleted_polynomial),
-            ("Contract $G/e$", step.contracted_graph, None, step.contracted_polynomial),
         ]
+        panels.extend(
+            (
+                self._latex_escape_tikz(self._symbolic_branch_panel_title(branch)),
+                branch.graph,
+                None,
+                branch.polynomial,
+            )
+            for branch in step.branches
+        )
         for index, (title, graph, highlight_edge_id, polynomial) in enumerate(panels):
             x_shift = index * 5.1
             lines.append(f"\\begin{{scope}}[shift={{({self._fmt_tikz(x_shift)},0)}}]")
@@ -944,10 +1046,11 @@ class GraphDrawer:
                 )
             lines.append("\\end{scope}")
         if step.edge is not None:
+            formula = self._latex_polynomial(self._symbolic_step_formula_text(step))
             lines.append(
                 "\\node[anchor=west, font=\\scriptsize] at (0,-4.85) "
                 f"{{Chosen edge: ${self._latex_escape_tikz(step.edge.label)}$, "
-                f"$f(G)=a f(G-e)+b f(G/e)={self._latex_polynomial(str(step.polynomial))}$}};"
+                f"$f(G)={formula}={self._latex_polynomial(str(step.polynomial))}$}};"
             )
             lines.append(
                 "\\node[anchor=west, font=\\tiny\\ttfamily] at (0,-5.18) "
@@ -967,22 +1070,25 @@ class GraphDrawer:
                 continue
             color = "red!75!black" if edge.id == highlight_edge_id else "gray!70!black"
             width = "0.9pt" if edge.id == highlight_edge_id else "0.55pt"
+            group_index, group_count = edge_groups.get(edge.id, (0, 1))
             if edge.source == edge.target:
                 x, y = source
+                grow = group_index * 0.16
+                radius = 0.25 + group_index * 0.06
                 lines.append(
                     f"\\draw[draw={color}, line width={width}] "
-                    f"({self._fmt_tikz(x + 0.22)},{self._fmt_tikz(y + 0.14)}) circle[radius=0.25];"
+                    f"({self._fmt_tikz(x + 0.22 + grow)},{self._fmt_tikz(y + 0.14 + grow)}) "
+                    f"circle[radius={self._fmt_tikz(radius)}];"
                 )
                 lines.append(
-                    f"\\node[font=\\tiny, text={color}] at ({self._fmt_tikz(x + 0.52)},{self._fmt_tikz(y + 0.42)}) "
+                    f"\\node[font=\\tiny, text={color}] at ({self._fmt_tikz(x + 0.52 + grow)},{self._fmt_tikz(y + 0.42 + grow)}) "
                     f"{{{self._latex_escape_tikz(edge.label)}}};"
                 )
                 continue
 
             x0, y0 = source
             x1, y1 = target
-            group_index, group_count = edge_groups.get(edge.id, (0, 1))
-            offset = (group_index - (group_count - 1) / 2) * 0.25
+            offset = self._parallel_edge_offset(group_index, group_count, 0.32)
             if abs(offset) > 0.01:
                 dx = x1 - x0
                 dy = y1 - y0
@@ -2245,8 +2351,6 @@ class GraphDrawer:
         manual_offset = getattr(edge, "curve_offset", None)
         if edge.source == edge.target:
             return float(manual_offset or 0)
-        if manual_offset is not None:
-            return float(manual_offset)
         return float(self._edge_curve_offset(edge))
 
     def _edge_offset_delta(self, dx, dy, basis):
@@ -2282,6 +2386,12 @@ class GraphDrawer:
             }
         nx = -dy / distance
         ny = dx / distance
+        endpoint_shift = self._parallel_edge_endpoint_shift(offset)
+        if endpoint_shift:
+            x0 += nx * endpoint_shift
+            y0 += ny * endpoint_shift
+            x1 += nx * endpoint_shift
+            y1 += ny * endpoint_shift
         cx = (x0 + x1) / 2 + nx * offset
         cy = (y0 + y1) / 2 + ny * offset
         return {
@@ -2295,7 +2405,7 @@ class GraphDrawer:
         radius = getattr(node, "radius", NODE_RADIUS)
         index = self._edge_variant_index(edge)
         manual_offset = getattr(edge, "curve_offset", None)
-        grow = index * 10 + (manual_offset or 0)
+        grow = index * 18 + (manual_offset or 0)
         grow = max(-18, min(220, grow))
         points = [
             (node.x + radius * 0.2, node.y - radius - 1),
@@ -2440,13 +2550,30 @@ class GraphDrawer:
 
     def _edge_curve_offset(self, edge):
         manual_offset = getattr(edge, "curve_offset", None)
-        if manual_offset is not None:
-            return manual_offset
         members = self._edge_group_members(edge)
+        if manual_offset is not None and not (
+            len(members) > 1 and abs(float(manual_offset)) < 0.01
+        ):
+            return manual_offset
         if len(members) <= 1:
             return 0
         index = members.index(edge)
-        return (index - (len(members) - 1) / 2) * 26
+        return self._parallel_edge_offset(index, len(members), 28)
+
+    def _parallel_edge_offset(self, index, count, spacing):
+        """Return a non-zero offset for each edge in a parallel-edge group."""
+
+        if count <= 1:
+            return 0
+        magnitude = index // 2 + 1
+        sign = -1 if index % 2 == 0 else 1
+        return sign * magnitude * spacing
+
+    def _parallel_edge_endpoint_shift(self, offset):
+        if abs(offset) < 0.01:
+            return 0
+        sign = 1 if offset > 0 else -1
+        return sign * min(11, max(5, abs(offset) * 0.18))
 
     def _edge_variant_index(self, edge):
         members = self._edge_group_members(edge)
